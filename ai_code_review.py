@@ -43,6 +43,7 @@ def get_pr_diff(pr_number, repo, headers):
 def parse_diff(diff):
     """解析 diff，提取文件、行号和代码块"""
     diff_lines = diff.splitlines()
+    logger.info(f"Diff lines: {diff_lines}")
     file_changes = []
     current_file = None
     current_hunk = None
@@ -80,13 +81,27 @@ def parse_diff(diff):
                         "old_start": int(hunk_info.group(1)),
                         "new_start": int(hunk_info.group(2)),
                         "lines": [],
-                        "header": line  # 保存完整的hunk头信息用于调试
+                        "header": line,  # 保存完整的hunk头信息用于调试
+                        "diff_hunk": line,  # 初始化diff_hunk，后续会添加更多行
+                        "changed_lines": []  # 跟踪添加的行及其行号
                     }
                     logger.debug(f"Found hunk: {line} for file {file_path}")
         
         # 收集代码行
         elif current_hunk and current_file and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
             current_hunk["lines"].append(line)
+            current_hunk["diff_hunk"] += "\n" + line
+            
+            # 如果是添加的行，记录行号
+            if line.startswith("+") and not line.startswith("+++"):
+                # 计算该行在新文件中的行号
+                line_index = len([l for l in current_hunk["lines"] if l.startswith("+") or l.startswith(" ")]) - 1
+                line_number = current_hunk["new_start"] + line_index
+                current_hunk["changed_lines"].append({
+                    "content": line[1:],  # 去掉前面的 "+"
+                    "line_number": line_number,
+                    "diff_line": line
+                })
     
     # 保存最后一个代码块和文件
     if current_hunk and current_file:
@@ -99,6 +114,7 @@ def parse_diff(diff):
         logger.info(f"File {fc['file']} has {len(fc['hunks'])} hunks")
         for i, hunk in enumerate(fc["hunks"]):
             logger.debug(f"Hunk {i+1}: {hunk['header']} with {len(hunk['lines'])} lines, new_start={hunk['new_start']}")
+            logger.debug(f"  Changed lines in hunk: {len(hunk['changed_lines'])}")
     
     return file_changes
 
@@ -140,7 +156,7 @@ def analyze_code_with_ai(diff_snippet, hunk_info=None):
     logger.debug(f"Preview of feedback: {feedback[:100]}...")
     return feedback
 
-def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers):
+def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers, diff_hunk=None):
     """在 Pull Request 的指定 diff 处发表评论"""
     comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
     
@@ -158,6 +174,11 @@ def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, he
         "line": line_number,
         "side": "RIGHT"
     }
+    
+    # 如果提供了diff_hunk，添加到请求中
+    if diff_hunk:
+        body["diff_hunk"] = diff_hunk
+    
     logger.info(f"Posting comment to {comment_url} for file {file_path} at line {line_number}")
     logger.debug(f"Comment body: {json.dumps(body)}")
     response = requests.post(comment_url, headers=headers, json=body)
@@ -167,6 +188,14 @@ def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, he
     else:
         logger.error(f"评论发布失败: {response.status_code}, {response.text}")
         logger.debug(f"Response headers: {response.headers}")
+        
+        # 如果失败，尝试获取更多错误信息
+        try:
+            error_info = response.json()
+            logger.error(f"Error details: {json.dumps(error_info)}")
+        except:
+            pass
+            
         return False
 
 def main():
