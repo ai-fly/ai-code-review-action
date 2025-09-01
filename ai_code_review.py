@@ -16,8 +16,10 @@ client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.openai-prc.com/v1"
 def get_pr_diff(pr_number, repo, headers):
     """获取 Pull Request 的 diff"""
     diff_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    diff_headers = headers.copy()
+    diff_headers["Accept"] = "application/vnd.github.diff"
     print(f"Fetching PR diff from: {diff_url}")
-    response = requests.get(diff_url, headers=headers, params={"accept": "application/vnd.github.diff"})
+    response = requests.get(diff_url, headers=diff_headers)
     print(f"Diff API response status: {response.status_code}")
     if response.status_code == 200:
         return response.text
@@ -31,27 +33,56 @@ def parse_diff(diff):
     file_changes = []
     current_file = None
     current_hunk = None
+    file_path = None
+    
     for line in diff_lines:
+        # 检测新文件的开始
         if line.startswith("diff --git"):
-            if current_file:
+            # 保存前一个文件的信息
+            if current_file and current_file["hunks"]:
                 file_changes.append(current_file)
-            current_file = {"file": line.split()[-1][2:], "hunks": []}
+            
+            # 重置当前文件信息
+            file_path = None
+            current_file = None
+            current_hunk = None
+            
+        # 提取文件路径
+        elif line.startswith("--- a/") or line.startswith("+++ b/"):
+            path = line[6:]  # 跳过 "--- a/" 或 "+++ b/"
+            if line.startswith("+++ b/") and path != "/dev/null":
+                file_path = path
+                current_file = {"file": file_path, "hunks": []}
+                
+        # 解析代码块信息
         elif line.startswith("@@"):
-            if current_hunk:
-                current_file["hunks"].append(current_hunk)
-            hunk_info = re.match(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@", line)
-            if hunk_info:
-                current_hunk = {
-                    "old_start": int(hunk_info.group(1)),
-                    "new_start": int(hunk_info.group(3)),
-                    "lines": []
-                }
-        elif current_hunk and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
+            if current_file:  # 确保我们有一个有效的文件
+                if current_hunk:
+                    current_file["hunks"].append(current_hunk)
+                
+                # 匹配 "@@ -71,7 +71,6 @@" 格式
+                hunk_info = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+                if hunk_info:
+                    current_hunk = {
+                        "old_start": int(hunk_info.group(1)),
+                        "new_start": int(hunk_info.group(2)),
+                        "lines": []
+                    }
+        
+        # 收集代码行
+        elif current_hunk and current_file and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
             current_hunk["lines"].append(line)
-    if current_hunk:
+    
+    # 保存最后一个代码块和文件
+    if current_hunk and current_file:
         current_file["hunks"].append(current_hunk)
-    if current_file:
+    if current_file and current_file["hunks"]:
         file_changes.append(current_file)
+    
+    print(f"Debug: Found {len(file_changes)} files with changes")
+    for fc in file_changes:
+        print(f"Debug: File {fc['file']} has {len(fc['hunks'])} hunks")
+    
     return file_changes
 
 def analyze_code_with_ai(diff_snippet):
@@ -110,6 +141,10 @@ def main():
     try:
         diff = get_pr_diff(pr_number, repo, headers)
         print(f"Successfully fetched diff, length: {len(diff)} characters")
+        print(f"Diff preview (first 10 lines):")
+        diff_lines = diff.splitlines()
+        for i in range(min(10, len(diff_lines))):
+            print(f"  {diff_lines[i]}")
         file_changes = parse_diff(diff)
         print(f"Parsed {len(file_changes)} changed files")
     except Exception as e:
