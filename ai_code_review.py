@@ -2,13 +2,26 @@ import requests
 import re
 import os
 import json
+import logging
 from openai import OpenAI
+
+# 配置日志
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("ai_code_review")
 
 # 从环境变量获取配置
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 GITHUB_EVENT_PATH = os.getenv("GITHUB_EVENT_PATH")
+
+# 日志配置
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+if not DEBUG:
+    logger.setLevel(logging.INFO)
 
 # 初始化 OpenAI 客户端
 client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.openai-prc.com/v1")
@@ -18,13 +31,13 @@ def get_pr_diff(pr_number, repo, headers):
     diff_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
     diff_headers = headers.copy()
     diff_headers["Accept"] = "application/vnd.github.diff"
-    print(f"Fetching PR diff from: {diff_url}")
+    logger.info(f"Fetching PR diff from: {diff_url}")
     response = requests.get(diff_url, headers=diff_headers)
-    print(f"Diff API response status: {response.status_code}")
+    logger.info(f"Diff API response status: {response.status_code}")
     if response.status_code == 200:
         return response.text
     else:
-        print(f"Diff API response content: {response.text[:200]}...")
+        logger.error(f"Diff API response content: {response.text[:200]}...")
         raise Exception(f"Failed to fetch diff: {response.status_code}")
 
 def parse_diff(diff):
@@ -66,8 +79,10 @@ def parse_diff(diff):
                     current_hunk = {
                         "old_start": int(hunk_info.group(1)),
                         "new_start": int(hunk_info.group(2)),
-                        "lines": []
+                        "lines": [],
+                        "header": line  # 保存完整的hunk头信息用于调试
                     }
+                    logger.debug(f"Found hunk: {line} for file {file_path}")
         
         # 收集代码行
         elif current_hunk and current_file and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
@@ -79,36 +94,63 @@ def parse_diff(diff):
     if current_file and current_file["hunks"]:
         file_changes.append(current_file)
     
-    print(f"Debug: Found {len(file_changes)} files with changes")
+    logger.info(f"Found {len(file_changes)} files with changes")
     for fc in file_changes:
-        print(f"Debug: File {fc['file']} has {len(fc['hunks'])} hunks")
+        logger.info(f"File {fc['file']} has {len(fc['hunks'])} hunks")
+        for i, hunk in enumerate(fc["hunks"]):
+            logger.debug(f"Hunk {i+1}: {hunk['header']} with {len(hunk['lines'])} lines, new_start={hunk['new_start']}")
     
     return file_changes
 
-def analyze_code_with_ai(diff_snippet):
+def analyze_code_with_ai(diff_snippet, hunk_info=None):
     """使用 OpenAI 分析代码 diff"""
+    hunk_desc = ""
+    if hunk_info:
+        hunk_desc = f"此代码块从第 {hunk_info['new_start']} 行开始。"
+        logger.info(f"Analyzing hunk starting at line {hunk_info['new_start']} with {len(diff_snippet.splitlines())} lines")
+    
     prompt = f"""
     你是一名专业的代码审查者。请审阅以下代码 diff，提供具体的改进建议。
     关注代码质量、潜在 bug、性能问题和最佳实践。
     如适用，建议改进代码片段。
+    {hunk_desc}
+    
     Diff:
     ```diff
     {diff_snippet}
     ```
+    
     返回格式化的反馈：
     - **Line [line_number]**: [反馈内容]
     - **建议** (可选): ```[language]\n[建议代码]\n```
+    
+    注意：
+    1. line_number 是相对于 diff 中显示的行号，而不是相对于文件开始的行号
+    2. 请确保为所有新增（+开头）的代码行提供评论，特别是有潜在问题的代码
+    3. 如果没有问题，也请至少提供一条改进建议
     """
+    logger.debug(f"Sending prompt to OpenAI with {len(prompt)} characters")
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=500
+        max_tokens=1000  # 增加 token 限制以获取更详细的反馈
     )
-    return response.choices[0].message.content
+    feedback = response.choices[0].message.content
+    logger.debug(f"Received feedback with {len(feedback)} characters")
+    logger.debug(f"Preview of feedback: {feedback[:100]}...")
+    return feedback
 
 def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers):
     """在 Pull Request 的指定 diff 处发表评论"""
     comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
+    
+    # 确保行号是一个有效的整数
+    try:
+        line_number = int(line_number)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid line number: {line_number}, using default line 1")
+        line_number = 1
+    
     body = {
         "body": comment,
         "commit_id": commit_id,
@@ -116,22 +158,25 @@ def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, he
         "line": line_number,
         "side": "RIGHT"
     }
-    print(f"Posting comment to {comment_url}")
-    print(f"Comment body: {json.dumps(body)}")
+    logger.info(f"Posting comment to {comment_url} for file {file_path} at line {line_number}")
+    logger.debug(f"Comment body: {json.dumps(body)}")
     response = requests.post(comment_url, headers=headers, json=body)
     if response.status_code == 201:
-        print(f"Comment posted successfully, response code: {response.status_code}")
+        logger.info(f"Comment posted successfully, response code: {response.status_code}")
+        return True
     else:
-        print(f"评论发布失败: {response.status_code}, {response.text}")
+        logger.error(f"评论发布失败: {response.status_code}, {response.text}")
+        logger.debug(f"Response headers: {response.headers}")
+        return False
 
 def main():
-    print("Starting code review process")
+    logger.info("Starting code review process")
     with open(GITHUB_EVENT_PATH, "r") as f:
         event = json.load(f)
     pr_number = event["pull_request"]["number"]
     repo = event["repository"]["full_name"]
     commit_id = event["pull_request"]["head"]["sha"]
-    print(f"Processing PR #{pr_number} for repo {repo}, commit {commit_id}")
+    logger.info(f"Processing PR #{pr_number} for repo {repo}, commit {commit_id}")
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -140,36 +185,54 @@ def main():
 
     try:
         diff = get_pr_diff(pr_number, repo, headers)
-        print(f"Successfully fetched diff, length: {len(diff)} characters")
-        print(f"Diff preview (first 10 lines):")
+        logger.info(f"Successfully fetched diff, length: {len(diff)} characters")
+        logger.debug(f"Diff preview (first 10 lines):")
         diff_lines = diff.splitlines()
         for i in range(min(10, len(diff_lines))):
-            print(f"  {diff_lines[i]}")
+            logger.debug(f"  {diff_lines[i]}")
         file_changes = parse_diff(diff)
-        print(f"Parsed {len(file_changes)} changed files")
+        logger.info(f"Parsed {len(file_changes)} changed files")
     except Exception as e:
-        print(f"Error during diff processing: {str(e)}")
+        logger.error(f"Error during diff processing: {str(e)}")
         return
 
     for file_change in file_changes:
         file_path = file_change["file"]
-        print(f"Processing file: {file_path}")
-        for hunk in file_change["hunks"]:
+        logger.info(f"Processing file: {file_path}")
+        for hunk_index, hunk in enumerate(file_change["hunks"]):
             diff_snippet = "\n".join(hunk["lines"])
-            print(f"  Analyzing hunk starting at line {hunk['new_start']}")
-            feedback = analyze_code_with_ai(diff_snippet)
-            print(f"  AI feedback received, length: {len(feedback)} characters")
+            logger.info(f"Analyzing hunk {hunk_index+1}/{len(file_change['hunks'])} starting at line {hunk['new_start']}")
+            
+            # 传递hunk信息给AI分析函数
+            feedback = analyze_code_with_ai(diff_snippet, hunk_info=hunk)
+            logger.info(f"AI feedback received, length: {len(feedback)} characters")
+            
             comment_count = 0
+            success_count = 0
+            
+            # 处理AI反馈
             for line in feedback.splitlines():
                 if line.startswith("- **Line"):
                     line_number_match = re.match(r"- \*\*Line (\d+)\*\*: (.*)", line)
                     if line_number_match:
-                        line_number = int(line_number_match.group(1)) + hunk["new_start"] - 1
+                        # 计算实际行号 - 相对行号 + 代码块起始行号 - 1
+                        relative_line_number = int(line_number_match.group(1))
+                        absolute_line_number = relative_line_number + hunk["new_start"] - 1
                         comment = line_number_match.group(2)
-                        print(f"  Posting comment at line {line_number}")
-                        post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers)
+                        
+                        logger.info(f"Posting comment at line {absolute_line_number} (relative line {relative_line_number})")
+                        success = post_comment(pr_number, repo, commit_id, file_path, absolute_line_number, comment, headers)
                         comment_count += 1
-            print(f"  Posted {comment_count} comments for this hunk")
+                        if success:
+                            success_count += 1
+            
+            logger.info(f"Posted {success_count}/{comment_count} comments for hunk {hunk_index+1}")
+            
+            # 如果没有评论，尝试为整个代码块添加一个通用评论
+            if comment_count == 0:
+                logger.info("No specific line comments found, adding a general comment for the hunk")
+                general_comment = f"AI审查了从第{hunk['new_start']}行开始的代码块，但没有发现具体问题。请人工检查此代码块。"
+                post_comment(pr_number, repo, commit_id, file_path, hunk["new_start"], general_comment, headers)
 
 if __name__ == "__main__":
     main()
