@@ -1,0 +1,26 @@
+name: 'AI Code Review Action'
+description: 'Run AI-powered code review on Pull Requests'
+inputs:
+  openai_model:
+    description: 'OpenAI model to use for code review'
+    required: false
+    default: 'gpt-4o'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r ${{ github.action_path }}/requirements.txt
+      shell: bash
+    - name: Run AI Code Review
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_MODEL: ${{ inputs.openai_model }}
+      run: python ${{ github.action_path }}/ai_code_review.py
+      shell: bash
