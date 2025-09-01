@@ -16,10 +16,13 @@ client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.openai-prc.com/v1"
 def get_pr_diff(pr_number, repo, headers):
     """获取 Pull Request 的 diff"""
     diff_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    print(f"Fetching PR diff from: {diff_url}")
     response = requests.get(diff_url, headers=headers, params={"accept": "application/vnd.github.diff"})
+    print(f"Diff API response status: {response.status_code}")
     if response.status_code == 200:
         return response.text
     else:
+        print(f"Diff API response content: {response.text[:200]}...")
         raise Exception(f"Failed to fetch diff: {response.status_code}")
 
 def parse_diff(diff):
@@ -82,37 +85,56 @@ def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, he
         "line": line_number,
         "side": "RIGHT"
     }
+    print(f"Posting comment to {comment_url}")
+    print(f"Comment body: {json.dumps(body)}")
     response = requests.post(comment_url, headers=headers, json=body)
-    if response.status_code != 201:
+    if response.status_code == 201:
+        print(f"Comment posted successfully, response code: {response.status_code}")
+    else:
         print(f"评论发布失败: {response.status_code}, {response.text}")
 
 def main():
+    print("Starting code review process")
     with open(GITHUB_EVENT_PATH, "r") as f:
         event = json.load(f)
     pr_number = event["pull_request"]["number"]
     repo = event["repository"]["full_name"]
     commit_id = event["pull_request"]["head"]["sha"]
+    print(f"Processing PR #{pr_number} for repo {repo}, commit {commit_id}")
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json"
     }
 
-    diff = get_pr_diff(pr_number, repo, headers)
-    file_changes = parse_diff(diff)
+    try:
+        diff = get_pr_diff(pr_number, repo, headers)
+        print(f"Successfully fetched diff, length: {len(diff)} characters")
+        file_changes = parse_diff(diff)
+        print(f"Parsed {len(file_changes)} changed files")
+    except Exception as e:
+        print(f"Error during diff processing: {str(e)}")
+        return
 
     for file_change in file_changes:
         file_path = file_change["file"]
+        print(f"Processing file: {file_path}")
         for hunk in file_change["hunks"]:
             diff_snippet = "\n".join(hunk["lines"])
+            print(f"  Analyzing hunk starting at line {hunk['new_start']}")
             feedback = analyze_code_with_ai(diff_snippet)
+            print(f"  AI feedback received, length: {len(feedback)} characters")
+            comment_count = 0
             for line in feedback.splitlines():
                 if line.startswith("- **Line"):
                     line_number_match = re.match(r"- \*\*Line (\d+)\*\*: (.*)", line)
                     if line_number_match:
                         line_number = int(line_number_match.group(1)) + hunk["new_start"] - 1
                         comment = line_number_match.group(2)
+                        print(f"  Posting comment at line {line_number}")
                         post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers)
+                        comment_count += 1
+            print(f"  Posted {comment_count} comments for this hunk")
 
 if __name__ == "__main__":
     main()
