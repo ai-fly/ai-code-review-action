@@ -215,10 +215,8 @@ def main():
     try:
         diff = get_pr_diff(pr_number, repo, headers)
         logger.info(f"Successfully fetched diff, length: {len(diff)} characters")
-        logger.debug(f"Diff preview (first 10 lines):")
-        diff_lines = diff.splitlines()
-        for i in range(min(10, len(diff_lines))):
-            logger.debug(f"  {diff_lines[i]}")
+        # log diff
+        logger.info(f"Diff: {diff}")
         file_changes = parse_diff(diff)
         logger.info(f"Parsed {len(file_changes)} changed files")
     except Exception as e:
