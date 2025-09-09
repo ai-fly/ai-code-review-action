@@ -43,7 +43,6 @@ def get_pr_diff(pr_number, repo, headers):
 def parse_diff(diff):
     """解析 diff，提取文件、行号和代码块"""
     diff_lines = diff.splitlines()
-    logger.info(f"Diff lines: {diff_lines}")
     file_changes = []
     current_file = None
     current_hunk = None
@@ -70,7 +69,7 @@ def parse_diff(diff):
                 
         # 解析代码块信息
         elif line.startswith("@@"):
-            if current_file:  # 确保我们有一个有效的文件
+            if current_file: 
                 if current_hunk:
                     current_file["hunks"].append(current_hunk)
                 
@@ -81,9 +80,9 @@ def parse_diff(diff):
                         "old_start": int(hunk_info.group(1)),
                         "new_start": int(hunk_info.group(2)),
                         "lines": [],
-                        "header": line,  # 保存完整的hunk头信息用于调试
-                        "diff_hunk": line,  # 初始化diff_hunk，后续会添加更多行
-                        "changed_lines": []  # 跟踪添加的行及其行号
+                        "header": line,  
+                        "diff_hunk": line, 
+                        "changed_lines": []
                     }
                     logger.debug(f"Found hunk: {line} for file {file_path}")
         
@@ -213,12 +212,13 @@ def main():
     }
 
     try:
+        # 获取diff
         diff = get_pr_diff(pr_number, repo, headers)
         logger.info(f"Successfully fetched diff, length: {len(diff)} characters")
         # log diff
         logger.info(f"Diff: {diff}")
         file_changes = parse_diff(diff)
-        logger.info(f"Parsed {len(file_changes)} changed files")
+        logger.info(f"File changes: {file_changes}")
     except Exception as e:
         logger.error(f"Error during diff processing: {str(e)}")
         return
