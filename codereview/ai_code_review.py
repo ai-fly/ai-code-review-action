@@ -43,35 +43,55 @@ def get_pr_diff(pr_number, repo, headers):
 def parse_diff(diff):
     """解析 diff，提取文件、行号和代码块"""
     diff_lines = diff.splitlines()
+    logger.info(f"Total diff lines: {len(diff_lines)}")
     file_changes = []
     current_file = None
     current_hunk = None
     file_path = None
     
-    for line in diff_lines:
+    for i, line in enumerate(diff_lines):
+        logger.debug(f"Line {i}: {line}")
+        
         # 检测新文件的开始
         if line.startswith("diff --git"):
-            # 保存前一个文件的信息
-            if current_file and current_file["hunks"]:
+            # 保存前一个文件和hunk的信息
+            if current_hunk and current_file:
+                current_file["hunks"].append(current_hunk)
+                current_hunk = None
+            if current_file and current_file.get("hunks"):
                 file_changes.append(current_file)
+                logger.info(f"Completed parsing file: {current_file['file']} with {len(current_file['hunks'])} hunks")
+            
+            # 从diff --git行中提取文件路径作为备用
+            git_match = re.match(r"diff --git a/(.*?) b/(.*?)$", line)
+            if git_match:
+                file_path = git_match.group(2)  # 使用b/后的路径
+                logger.debug(f"Detected file from git line: {file_path}")
             
             # 重置当前文件信息
-            file_path = None
             current_file = None
             current_hunk = None
             
-        # 提取文件路径
-        elif line.startswith("--- a/") or line.startswith("+++ b/"):
-            path = line[6:]  # 跳过 "--- a/" 或 "+++ b/"
-            if line.startswith("+++ b/") and path != "/dev/null":
+        # 提取文件路径 - 优先使用+++ b/的路径
+        elif line.startswith("+++ b/"):
+            path = line[6:]  # 跳过 "+++ b/"
+            if path != "/dev/null":
                 file_path = path
                 current_file = {"file": file_path, "hunks": []}
+                logger.info(f"Starting to parse file: {file_path}")
+        
+        # 如果没有从+++行获取到路径，但有git行的路径，也创建文件对象
+        elif line.startswith("--- a/") and not current_file and file_path:
+            current_file = {"file": file_path, "hunks": []}
+            logger.info(f"Starting to parse file from --- line: {file_path}")
                 
         # 解析代码块信息
         elif line.startswith("@@"):
-            if current_file: 
+            if current_file:  # 确保我们有一个有效的文件
+                # 保存前一个hunk
                 if current_hunk:
                     current_file["hunks"].append(current_hunk)
+                    logger.debug(f"Completed hunk with {len(current_hunk['lines'])} lines")
                 
                 # 匹配 "@@ -71,7 +71,6 @@" 格式
                 hunk_info = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
@@ -80,14 +100,16 @@ def parse_diff(diff):
                         "old_start": int(hunk_info.group(1)),
                         "new_start": int(hunk_info.group(2)),
                         "lines": [],
-                        "header": line,  
-                        "diff_hunk": line, 
-                        "changed_lines": []
+                        "header": line,  # 保存完整的hunk头信息用于调试
+                        "diff_hunk": line,  # 初始化diff_hunk，后续会添加更多行
+                        "changed_lines": []  # 跟踪添加的行及其行号
                     }
                     logger.debug(f"Found hunk: {line} for file {file_path}")
+            else:
+                logger.warning(f"Found hunk header but no current file: {line}")
         
-        # 收集代码行
-        elif current_hunk and current_file and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
+        # 收集代码行 - 只有在有当前hunk时才收集
+        elif current_hunk and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
             current_hunk["lines"].append(line)
             current_hunk["diff_hunk"] += "\n" + line
             
@@ -101,12 +123,23 @@ def parse_diff(diff):
                     "line_number": line_number,
                     "diff_line": line
                 })
+        
+        # 处理非代码行（如index、mode等）但不在hunk中时，跳过
+        elif not current_hunk and (line.startswith("index ") or line.startswith("new file mode") or line.startswith("deleted file mode") or line == ""):
+            logger.debug(f"Skipping metadata line: {line}")
+            continue
+        
+        # 如果是其他类型的行且在hunk中，也需要记录
+        elif current_hunk and line.strip():
+            logger.debug(f"Unexpected line in hunk context: {line}")
     
     # 保存最后一个代码块和文件
     if current_hunk and current_file:
         current_file["hunks"].append(current_hunk)
-    if current_file and current_file["hunks"]:
+        logger.debug(f"Completed final hunk with {len(current_hunk['lines'])} lines")
+    if current_file and current_file.get("hunks"):
         file_changes.append(current_file)
+        logger.info(f"Completed parsing final file: {current_file['file']} with {len(current_file['hunks'])} hunks")
     
     logger.info(f"Found {len(file_changes)} files with changes")
     for fc in file_changes:
@@ -217,6 +250,7 @@ def main():
         logger.info(f"Successfully fetched diff, length: {len(diff)} characters")
         # log diff
         logger.info(f"Diff: {diff}")
+        # 解析diff文件
         file_changes = parse_diff(diff)
         logger.info(f"File changes: {file_changes}")
     except Exception as e:
