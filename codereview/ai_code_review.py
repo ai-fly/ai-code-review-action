@@ -104,7 +104,7 @@ def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, he
 # llm api
 
 
-def analyze_code_with_ai(diff_snippet, hunk_info=None) -> List[CodeReviewIssue]:
+def analyze_code_with_ai(formatted_change) -> List[CodeReviewIssue]:
     """使用 OpenAI 分析代码 diff"""
 
     prompt = f"""
@@ -112,7 +112,7 @@ def analyze_code_with_ai(diff_snippet, hunk_info=None) -> List[CodeReviewIssue]:
 
 Provided diff information (grouped by file and hunk, including context lines, added lines, removed lines, and their line numbers):
 
-{formatted_diff}
+{formatted_change}
 
 Please conduct a code review based on the above diff. Focus on the following aspects:
 - **Correctness**: Do the changes fix bugs or introduce new ones? Is the logic sound?
@@ -302,29 +302,27 @@ def main():
         logger.info(f"Diff: {diff}")
         # 解析diff文件
         file_changes = parse_git_diff(diff)
+        formatted_changes = format_for_llm(file_changes)
         logger.info(f"File changes: {file_changes}")
     except Exception as e:
         logger.error(f"Error during diff processing: {str(e)}")
         return
 
-    for file_change in file_changes:
-        file_path = file_change["file"]
+    # 按文件提交
+    for index, file_change in enumerate(file_changes):
+        file_path = file_change["filename"]
         logger.info(f"Processing file: {file_path}")
-        for hunk_index, hunk in enumerate(file_change["hunks"]):
-            diff_snippet = "\n".join(hunk["lines"])
-            logger.info(
-                f"Analyzing hunk {hunk_index+1}/{len(file_change['hunks'])} starting at line {hunk['new_start']}")
+        # 传递hunk信息给AI分析函数
+        formatted_change = formatted_changes[index]
+        issues = analyze_code_with_ai(formatted_change)
+        logger.info(
+             f"AI issues received total: {len(issues)} issues")
 
-            # 传递hunk信息给AI分析函数
-            issues = analyze_code_with_ai(diff_snippet, hunk_info=hunk)
-            logger.info(
-                f"AI feedback received, length: {len(feedback)} characters")
+        comment_count = 0
+        success_count = 0
 
-            comment_count = 0
-            success_count = 0
-
-            # 处理AI反馈
-            for issue in issues:
+        # 处理AI反馈
+        for issue in issues:
                 comment = format_for_comment(issue)
                 success = post_comment(
                     pr_number, repo, commit_id, file_path, issue.line, comment, headers)
@@ -332,8 +330,8 @@ def main():
                 if success:
                     success_count += 1
 
-            logger.info(
-                f"Posted {success_count}/{comment_count} comments for hunk {hunk_index+1}")
+        logger.info(
+                f"Posted {success_count}/{comment_count} comments for file {file_path}")
 
 
 if __name__ == "__main__":
