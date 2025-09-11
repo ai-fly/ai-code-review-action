@@ -141,11 +141,20 @@ If there are no issues, leave the array empty []. Ensure the JSON is valid.
         messages=[{"role": "user", "content": prompt}],
         max_tokens=10000,
         temperature=0.3,
-        response_format=List[CodeReviewIssue],
+        response_format={"type": "json_object"},
     )
-    issues = response.choices[0].parsed
-    logger.debug(f"Received feedback with {len(issues)} characters")
-    return issues
+    
+    # 解析JSON响应并转换为CodeReviewIssue对象
+    try:
+        response_text = response.choices[0].message.content
+        issues_data = json.loads(response_text)
+        issues = [CodeReviewIssue(**issue) for issue in issues_data]
+        logger.debug(f"Received feedback with {len(issues)} issues")
+        return issues
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Failed to parse AI response: {e}")
+        logger.error(f"Raw response: {response.choices[0].message.content}")
+        return []
 
 # parse git diff
 
@@ -299,11 +308,11 @@ def main():
         logger.info(
             f"Successfully fetched diff, length: {len(diff)} characters")
         # log diff
-        logger.info(f"Diff: {diff}")
+        logger.debug(f"Diff: {diff}")
         # 解析diff文件
         file_changes = parse_git_diff(diff)
         formatted_changes = format_for_llm(file_changes)
-        logger.info(f"File changes: {file_changes}")
+        logger.debug(f"File changes: {file_changes}")
     except Exception as e:
         logger.error(f"Error during diff processing: {str(e)}")
         return
