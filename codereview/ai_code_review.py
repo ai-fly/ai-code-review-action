@@ -4,7 +4,9 @@ import os
 import json
 import logging
 from openai import OpenAI
-from typing import Dict, List
+from typing import Dict, List, Literal
+from pydantic import BaseModel
+
 
 # 配置日志
 logging.basicConfig(
@@ -25,7 +27,9 @@ if not DEBUG:
     logger.setLevel(logging.INFO)
 
 # 初始化 OpenAI 客户端
-client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.openai-prc.com/v1")
+client = OpenAI(api_key=OPENAI_API_KEY,
+                base_url="https://api.openai-prc.com/v1")
+
 
 class CodeReviewIssue(BaseModel):
     type: Literal["bug", "security", "performance", "style", "best_practice"]
@@ -35,6 +39,8 @@ class CodeReviewIssue(BaseModel):
     suggestion: str
 
 # github api
+
+
 def get_pr_diff(pr_number, repo, headers):
     """获取 Pull Request 的 diff"""
     diff_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
@@ -49,17 +55,19 @@ def get_pr_diff(pr_number, repo, headers):
         logger.error(f"Diff API response content: {response.text[:200]}...")
         raise Exception(f"Failed to fetch diff: {response.status_code}")
 
+
 def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers, diff_hunk=None):
     """在 Pull Request 的指定 diff 处发表评论"""
     comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
-    
+
     # 确保行号是一个有效的整数
     try:
         line_number = int(line_number)
     except (ValueError, TypeError):
-        logger.warning(f"Invalid line number: {line_number}, using default line 1")
+        logger.warning(
+            f"Invalid line number: {line_number}, using default line 1")
         line_number = 1
-    
+
     body = {
         "body": comment,
         "commit_id": commit_id,
@@ -67,31 +75,35 @@ def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, he
         "line": line_number,
         "side": "RIGHT"
     }
-    
+
     # 如果提供了diff_hunk，添加到请求中
     if diff_hunk:
         body["diff_hunk"] = diff_hunk
-    
-    logger.info(f"Posting comment to {comment_url} for file {file_path} at line {line_number}")
+
+    logger.info(
+        f"Posting comment to {comment_url} for file {file_path} at line {line_number}")
     logger.debug(f"Comment body: {json.dumps(body)}")
     response = requests.post(comment_url, headers=headers, json=body)
     if response.status_code == 201:
-        logger.info(f"Comment posted successfully, response code: {response.status_code}")
+        logger.info(
+            f"Comment posted successfully, response code: {response.status_code}")
         return True
     else:
         logger.error(f"评论发布失败: {response.status_code}, {response.text}")
         logger.debug(f"Response headers: {response.headers}")
-        
+
         # 如果失败，尝试获取更多错误信息
         try:
             error_info = response.json()
             logger.error(f"Error details: {json.dumps(error_info)}")
         except:
             pass
-            
+
         return False
 
 # llm api
+
+
 def analyze_code_with_ai(diff_snippet, hunk_info=None) -> List[CodeReviewIssue]:
     """使用 OpenAI 分析代码 diff"""
 
@@ -131,11 +143,13 @@ If there are no issues, leave the array empty []. Ensure the JSON is valid.
         temperature=0.3,
         response_format=List[CodeReviewIssue],
     )
-    issues = response.choices[0].parsed 
+    issues = response.choices[0].parsed
     logger.debug(f"Received feedback with {len(issues)} characters")
     return issues
 
 # parse git diff
+
+
 def parse_git_diff(diff_content: str) -> List[Dict]:
     """
     Parse a GitHub PR diff and extract filenames, line numbers, and code blocks.
@@ -207,7 +221,9 @@ def parse_git_diff(diff_content: str) -> List[Dict]:
 
     return diff_blocks
 
-# format 
+# format
+
+
 def format_for_llm(diff_blocks: List[Dict]) -> List[str]:
     """
     Format parsed diff blocks into a list of strings, one per file, suitable for LLM code review.
@@ -219,30 +235,35 @@ def format_for_llm(diff_blocks: List[Dict]) -> List[str]:
         List[str]: List of formatted strings, each containing diff information for one file.
     """
     file_outputs = []
-    
+
     for block in diff_blocks:
         file_output = []
         file_output.append(f"File: {block['filename']}")
-        
+
         for hunk in block['hunks']:
-            file_output.append(f"\nHunk (new lines starting at {hunk['new_start']}):")
+            file_output.append(
+                f"\nHunk (new lines starting at {hunk['new_start']}):")
             if hunk['context_lines']:
                 file_output.append("Context Lines:")
                 for line in hunk['context_lines']:
-                    file_output.append(f"  Line {line['line_number']}: {line['content']}")
+                    file_output.append(
+                        f"  Line {line['line_number']}: {line['content']}")
             if hunk['removed_lines']:
                 file_output.append("Removed Lines:")
                 for line in hunk['removed_lines']:
-                    file_output.append(f"  Line {line['line_number']}: {line['content']}")
+                    file_output.append(
+                        f"  Line {line['line_number']}: {line['content']}")
             if hunk['added_lines']:
                 file_output.append("Added Lines:")
                 for line in hunk['added_lines']:
-                    file_output.append(f"  Line {line['line_number']}: {line['content']}")
-        
+                    file_output.append(
+                        f"  Line {line['line_number']}: {line['content']}")
+
         # 将该文件的所有内容合并为一个字符串并添加到结果数组中
         file_outputs.append("\n".join(file_output))
-    
+
     return file_outputs
+
 
 def format_for_comment(issue: CodeReviewIssue) -> str:
     """
@@ -256,6 +277,7 @@ def format_for_comment(issue: CodeReviewIssue) -> str:
     """
     return issue_output
 
+
 def main():
     logger.info("Starting code review process")
     with open(GITHUB_EVENT_PATH, "r") as f:
@@ -263,7 +285,8 @@ def main():
     pr_number = event["pull_request"]["number"]
     repo = event["repository"]["full_name"]
     commit_id = event["pull_request"]["head"]["sha"]
-    logger.info(f"Processing PR #{pr_number} for repo {repo}, commit {commit_id}")
+    logger.info(
+        f"Processing PR #{pr_number} for repo {repo}, commit {commit_id}")
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -273,7 +296,8 @@ def main():
     try:
         # 获取diff
         diff = get_pr_diff(pr_number, repo, headers)
-        logger.info(f"Successfully fetched diff, length: {len(diff)} characters")
+        logger.info(
+            f"Successfully fetched diff, length: {len(diff)} characters")
         # log diff
         logger.info(f"Diff: {diff}")
         # 解析diff文件
@@ -288,24 +312,29 @@ def main():
         logger.info(f"Processing file: {file_path}")
         for hunk_index, hunk in enumerate(file_change["hunks"]):
             diff_snippet = "\n".join(hunk["lines"])
-            logger.info(f"Analyzing hunk {hunk_index+1}/{len(file_change['hunks'])} starting at line {hunk['new_start']}")
-            
+            logger.info(
+                f"Analyzing hunk {hunk_index+1}/{len(file_change['hunks'])} starting at line {hunk['new_start']}")
+
             # 传递hunk信息给AI分析函数
             issues = analyze_code_with_ai(diff_snippet, hunk_info=hunk)
-            logger.info(f"AI feedback received, length: {len(feedback)} characters")
-            
+            logger.info(
+                f"AI feedback received, length: {len(feedback)} characters")
+
             comment_count = 0
             success_count = 0
-            
+
             # 处理AI反馈
             for issue in issues:
                 comment = format_for_comment(issue)
-                post_comment(pr_number, repo, commit_id, file_path, issue.line, comment, headers)
+                success = post_comment(
+                    pr_number, repo, commit_id, file_path, issue.line, comment, headers)
                 comment_count += 1
                 if success:
                     success_count += 1
-            
-            logger.info(f"Posted {success_count}/{comment_count} comments for hunk {hunk_index+1}")
+
+            logger.info(
+                f"Posted {success_count}/{comment_count} comments for hunk {hunk_index+1}")
+
 
 if __name__ == "__main__":
     main()
