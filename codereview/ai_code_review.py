@@ -122,16 +122,16 @@ Please conduct a code review based on the above diff. Focus on the following asp
 - **Best Practices**: Is appropriate exception handling used? Are new features fully implemented? Use of context managers?
 - **Overall Impact**: What are the potential impacts of these changes on the project?
 
-Output must be in strict JSON format only, with no additional text. Use the following JSON structure:
-[
-        {
+Output must be in strict JSON format only, with no additional text. Use the following JSON structure, issues is an array, each item is a CodeReviewIssue object:
+{{
+        "issues":[{{
           "type": "bug|security|performance|style|best_practice (string)",
           "severity": "low|medium|high (string)",
           "line": "Comment start line (int)",
           "description": "Issue description (string)",
           "suggestion": "Fix suggestion (string)",
-        }
-]
+        }}]
+}}
 
 If there are no issues, leave the array empty []. Ensure the JSON is valid.
     """
@@ -147,8 +147,9 @@ If there are no issues, leave the array empty []. Ensure the JSON is valid.
     # 解析JSON响应并转换为CodeReviewIssue对象
     try:
         response_text = response.choices[0].message.content
+        logger.info(f"Response text: {response_text}")
         issues_data = json.loads(response_text)
-        issues = [CodeReviewIssue(**issue) for issue in issues_data]
+        issues = [CodeReviewIssue(**issue) for issue in issues_data["issues"]]
         logger.debug(f"Received feedback with {len(issues)} issues")
         return issues
     except (json.JSONDecodeError, ValueError) as e:
