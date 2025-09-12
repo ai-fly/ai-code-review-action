@@ -308,11 +308,11 @@ def main():
         logger.info(
             f"Successfully fetched diff, length: {len(diff)} characters")
         # log diff
-        logger.debug(f"Diff: {diff}")
+        logger.info(f"Diff: {diff}")
         # 解析diff文件
         file_changes = parse_git_diff(diff)
         formatted_changes = format_for_llm(file_changes)
-        logger.debug(f"File changes: {file_changes}")
+        logger.info(f"File changes: {file_changes}")
     except Exception as e:
         logger.error(f"Error during diff processing: {str(e)}")
         return
