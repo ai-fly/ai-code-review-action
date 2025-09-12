@@ -200,7 +200,9 @@ def parse_git_diff(diff_content: str) -> List[Dict]:
                 'new_start': int(hunk_match.group(2).split(',')[0]),
                 'added_lines': [],
                 'removed_lines': [],
-                'context_lines': []
+                'context_lines': [],
+                'old_line_num': int(hunk_match.group(1).split(',')[0]),  # 当前旧文件行号
+                'new_line_num': int(hunk_match.group(2).split(',')[0])   # 当前新文件行号
             }
             current_block['hunks'].append(current_hunk)
             continue
@@ -210,19 +212,24 @@ def parse_git_diff(diff_content: str) -> List[Dict]:
             current_hunk = current_block['hunks'][-1]
             if line.startswith('+') and not line.startswith('+++'):
                 current_hunk['added_lines'].append({
-                    'line_number': current_hunk['new_start'] + len(current_hunk['added_lines']),
+                    'line_number': current_hunk['new_line_num'],
                     'content': line[1:].rstrip()
                 })
+                current_hunk['new_line_num'] += 1  # 只增加新文件行号
             elif line.startswith('-') and not line.startswith('---'):
                 current_hunk['removed_lines'].append({
-                    'line_number': current_hunk['old_start'] + len(current_hunk['removed_lines']),
+                    'line_number': current_hunk['old_line_num'],
                     'content': line[1:].rstrip()
                 })
+                current_hunk['old_line_num'] += 1  # 只增加旧文件行号
             elif line.startswith(' '):
                 current_hunk['context_lines'].append({
-                    'line_number': current_hunk['new_start'] + len(current_hunk['added_lines']),
+                    'line_number': current_hunk['new_line_num'],
                     'content': line[1:].rstrip()
                 })
+                # context行在新旧文件中都存在，所以两个行号都要增加
+                current_hunk['old_line_num'] += 1
+                current_hunk['new_line_num'] += 1
 
     # Append the last block if it exists
     if current_block:
