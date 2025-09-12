@@ -28,7 +28,7 @@ if not DEBUG:
 
 # 初始化 OpenAI 客户端
 client = OpenAI(api_key=OPENAI_API_KEY,
-                base_url="https://api.openai-prc.com/v1")
+                base_url="https://openrouter.ai/api/v1")
 
 
 class CodeReviewIssue(BaseModel):
@@ -122,7 +122,7 @@ Please conduct a code review based on the above diff. Focus on the following asp
 - **Best Practices**: Is appropriate exception handling used? Are new features fully implemented? Use of context managers?
 - **Overall Impact**: What are the potential impacts of these changes on the project?
 
-Output must be in strict JSON format only, with no additional text. Use the following JSON structure, issues is an array, each item is a CodeReviewIssue object:
+Output must be in strict JSON format only, do not have undeclared types, with no additional text. Use the following JSON structure, issues is an array, each item is a CodeReviewIssue object:
 {{
         "issues":[{{
           "type": "bug|security|performance|style|best_practice (string)",
@@ -139,8 +139,7 @@ If there are no issues, leave the array empty []. Ensure the JSON is valid.
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=10000,
-        temperature=0.3,
+        max_tokens=20000,
         response_format={"type": "json_object"},
     )
     
@@ -257,17 +256,17 @@ def format_for_llm(diff_blocks: List[Dict]) -> List[str]:
                 file_output.append("Context Lines:")
                 for line in hunk['context_lines']:
                     file_output.append(
-                        f"  Line {line['line_number']}: {line['content']}")
+                        f"{line['line_number']}: {line['content']}")
             if hunk['removed_lines']:
                 file_output.append("Removed Lines:")
                 for line in hunk['removed_lines']:
                     file_output.append(
-                        f"  Line {line['line_number']}: {line['content']}")
+                        f"{line['line_number']} -: {line['content']}")
             if hunk['added_lines']:
                 file_output.append("Added Lines:")
                 for line in hunk['added_lines']:
                     file_output.append(
-                        f"  Line {line['line_number']}: {line['content']}")
+                        f"{line['line_number']} +: {line['content']}")
 
         # 将该文件的所有内容合并为一个字符串并添加到结果数组中
         file_outputs.append("\n".join(file_output))
@@ -346,3 +345,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
