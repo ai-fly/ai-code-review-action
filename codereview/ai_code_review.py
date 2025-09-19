@@ -27,7 +27,7 @@ if not DEBUG:
     logger.setLevel(logging.INFO)
 
 # 初始化 OpenAI 客户端
-client = OpenAI(api_key=OPENAI_API_KEY,
+client = OpenAI(api_key='sk-1234567890',
                 base_url="https://api.allall.ai/v1")
 
 
@@ -302,20 +302,7 @@ def format_for_comment(issue: CodeReviewIssue) -> str:
     支持多行代码建议。
     """
     # 确定是单行还是多行评论
-    line_range = f"L{issue.start_line}"
-    if issue.end_line and issue.end_line > issue.start_line:
-        line_range = f"L{issue.start_line}-L{issue.end_line}"
-    
-    issue_output = f"""
-    **Type**: {issue.type}
-    **Severity**: {issue.severity}
-    **Lines**: {line_range}
-    **Suggestion**: {issue.suggestion}
-    
-    ```suggestion
-    {issue.code}
-    ```
-    """
+    issue_output = f"""**Type**: {issue.type}\n**Severity**: {issue.severity}\n**Suggestion**: {issue.suggestion}\n```suggestion\n{issue.code}\n```"""
     return issue_output
 
 
