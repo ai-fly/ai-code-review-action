@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 # 配置日志
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("ai_code_review")
@@ -290,9 +290,6 @@ def format_for_comment(issue: CodeReviewIssue) -> str:
     Severity: {issue.severity}
     suggestion: {issue.suggestion}
     Code:
-    ```suggestion
-    {issue.code}
-    ```
     """
     return issue_output
 
@@ -343,8 +340,27 @@ def main():
         # 处理AI反馈
         for issue in issues:
                 comment = format_for_comment(issue)
+                # 查找原始代码行
+                original_line = None
+                for hunk in file_change['hunks']:
+                    for line_info in hunk['added_lines'] + hunk['context_lines']:
+                        if line_info['line_number'] == issue.line:
+                            original_line = line_info['content']
+                            break
+                    if original_line:
+                        break
+                
+                # 构建正确的diff_hunk和suggestion格式
+                if original_line:
+                    # 标准diff格式：@@ -行号,行数 +行号,行数 @@
+                    diff_hunk = f"@@ -{issue.line},1 +{issue.line},1 @@\n-{original_line}\n+{issue.code}"
+                    comment += f"\n```suggestion\n{issue.code}\n```"
+                else:
+                    # 如果找不到原始行，使用空行作为上下文
+                    diff_hunk = f"@@ -{issue.line},0 +{issue.line},1 @@\n+{issue.code}"
+                    comment += f"\n```suggestion\n{issue.code}\n```"
                 success = post_comment(
-                    pr_number, repo, commit_id, file_path, issue.line, comment, headers)
+                    pr_number, repo, commit_id, file_path, issue.line, comment, headers, diff_hunk)
                 comment_count += 1
                 if success:
                     success_count += 1
