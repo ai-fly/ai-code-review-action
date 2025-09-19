@@ -27,7 +27,7 @@ if not DEBUG:
     logger.setLevel(logging.INFO)
 
 # 初始化 OpenAI 客户端
-client = OpenAI(api_key='sk-1234567890',
+client = OpenAI(api_key=OPENAI_API_KEY,
                 base_url="https://api.allall.ai/v1")
 
 
