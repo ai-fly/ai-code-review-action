@@ -35,8 +35,8 @@ class CodeReviewIssue(BaseModel):
     type: Literal["bug", "security", "performance", "style", "best_practice"]
     severity: Literal["low", "medium", "high"]
     line: int
-    description: str
     suggestion: str
+    code: str
 
 # github api
 
@@ -128,8 +128,8 @@ Output must be in strict JSON format only, do not have undeclared types, with no
           "type": "bug|security|performance|style|best_practice (string)",
           "severity": "low|medium|high (string)",
           "line": "Comment start line (int)",
-          "description": "Issue description (string)",
           "suggestion": "Fix suggestion (string)",
+          "code": "Complete code line with fix (not just the changed part)",
         }}]
 }}
 
@@ -283,13 +283,16 @@ def format_for_llm(diff_blocks: List[Dict]) -> List[str]:
 
 def format_for_comment(issue: CodeReviewIssue) -> str:
     """
-    Format code review issues into string, suitable for comment.
+    Format code review issues into string with GitHub suggestion format.
     """
     issue_output = f"""
     Type: {issue.type}
     Severity: {issue.severity}
-    Description: {issue.description}
-    Suggestion: {issue.suggestion}
+    suggestion: {issue.description}
+    Code:
+    ```suggestion
+    {issue.code}
+    ```
     """
     return issue_output
 
