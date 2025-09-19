@@ -28,7 +28,7 @@ if not DEBUG:
 
 # 初始化 OpenAI 客户端
 client = OpenAI(api_key=OPENAI_API_KEY,
-                base_url="https://api.openai-prc.com/v1")
+                base_url="https://api.allall.ai")
 
 
 class CodeReviewIssue(BaseModel):
