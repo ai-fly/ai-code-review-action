@@ -75,18 +75,20 @@ def post_comment(pr_number, repo, commit_id, file_path, start_line, end_line, co
         start_line = 1
         end_line = 1
 
-    # 根据GitHub API最新要求构建请求体
+    # 根据GitHub API要求构建请求体
+    # 参考: https://docs.github.com/rest/pulls/comments#create-a-review-comment-for-a-pull-request
     body = {
         "body": comment,
         "commit_id": commit_id,
         "path": file_path,
-        "subject_type": "line",
-        "positioning": {
-            "start_line": start_line,
-            "end_line": end_line,
-            "side": "RIGHT"
-        }
+        "line": end_line,  # 评论应该出现在哪一行
+        "side": "RIGHT"    # RIGHT表示新文件，LEFT表示旧文件
     }
+    
+    # 如果是多行评论，添加start_line参数
+    if start_line != end_line:
+        body["start_line"] = start_line
+        body["start_side"] = "RIGHT"  # 多行评论的起始行也在新文件中
 
     logger.info(
         f"Posting comment to {comment_url} for file {file_path} at lines {start_line}-{end_line}")
