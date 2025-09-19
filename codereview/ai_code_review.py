@@ -139,7 +139,7 @@ If there are no issues, leave the array empty []. Ensure the JSON is valid.
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=20000,
+        max_tokens=10000,
         response_format={"type": "json_object"},
     )
     
