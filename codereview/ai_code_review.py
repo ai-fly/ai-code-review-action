@@ -34,9 +34,10 @@ client = OpenAI(api_key=OPENAI_API_KEY,
 class CodeReviewIssue(BaseModel):
     type: Literal["bug", "security", "performance", "style", "best_practice"]
     severity: Literal["low", "medium", "high"]
-    line: int
+    start_line: int  # 代码起始行
+    end_line: int = None  # 代码结束行，如果是单行则与start_line相同
     suggestion: str
-    code: str
+    code: str  # 修改后的完整代码
 
 # github api
 
@@ -56,32 +57,39 @@ def get_pr_diff(pr_number, repo, headers):
         raise Exception(f"Failed to fetch diff: {response.status_code}")
 
 
-def post_comment(pr_number, repo, commit_id, file_path, line_number, comment, headers, diff_hunk=None):
-    """在 Pull Request 的指定 diff 处发表评论"""
+def post_comment(pr_number, repo, commit_id, file_path, start_line, end_line, comment, headers):
+    """在 Pull Request 的指定位置发表评论，支持多行代码范围"""
     comment_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments"
 
-    # 确保行号是一个有效的整数
+    # 确保行号是有效的整数
     try:
-        line_number = int(line_number)
+        start_line = int(start_line)
+        # 如果end_line为None，则设置为与start_line相同（单行评论）
+        if end_line is None:
+            end_line = start_line
+        else:
+            end_line = int(end_line)
     except (ValueError, TypeError):
         logger.warning(
-            f"Invalid line number: {line_number}, using default line 1")
-        line_number = 1
+            f"Invalid line numbers: start={start_line}, end={end_line}, using default line 1")
+        start_line = 1
+        end_line = 1
 
+    # 根据GitHub API最新要求构建请求体
     body = {
         "body": comment,
         "commit_id": commit_id,
         "path": file_path,
-        "line": line_number,
-        "side": "RIGHT"
+        "subject_type": "line",
+        "positioning": {
+            "start_line": start_line,
+            "end_line": end_line,
+            "side": "RIGHT"
+        }
     }
 
-    # 如果提供了diff_hunk，添加到请求中
-    if diff_hunk:
-        body["diff_hunk"] = diff_hunk
-
     logger.info(
-        f"Posting comment to {comment_url} for file {file_path} at line {line_number}")
+        f"Posting comment to {comment_url} for file {file_path} at lines {start_line}-{end_line}")
     logger.debug(f"Comment body: {json.dumps(body)}")
     response = requests.post(comment_url, headers=headers, json=body)
     if response.status_code == 201:
@@ -127,11 +135,16 @@ Output must be in strict JSON format only, do not have undeclared types, with no
         "issues":[{{
           "type": "bug|security|performance|style|best_practice (string)",
           "severity": "low|medium|high (string)",
-          "line": "Comment start line (int)",
+          "start_line": "Code block start line (int)",
+          "end_line": "Code block end line (int)",
           "suggestion": "Fix suggestion (string)",
-          "code": "Complete code line with fix (not just the changed part)",
+          "code": "Complete code block with fix (can be multiple lines)",
         }}]
 }}
+
+For issues that affect multiple lines of code, set start_line and end_line to cover the full range of affected lines.
+For single-line issues, set both start_line and end_line to the same value.
+When suggesting fixes for multiple lines, include the complete fixed code block in the "code" field.
 
 If there are no issues, leave the array empty []. Ensure the JSON is valid.
     """
@@ -284,12 +297,22 @@ def format_for_llm(diff_blocks: List[Dict]) -> List[str]:
 def format_for_comment(issue: CodeReviewIssue) -> str:
     """
     Format code review issues into string with GitHub suggestion format.
+    支持多行代码建议。
     """
+    # 确定是单行还是多行评论
+    line_range = f"L{issue.start_line}"
+    if issue.end_line and issue.end_line > issue.start_line:
+        line_range = f"L{issue.start_line}-L{issue.end_line}"
+    
     issue_output = f"""
-    Type: {issue.type}
-    Severity: {issue.severity}
-    suggestion: {issue.suggestion}
-    Code:
+    **Type**: {issue.type}
+    **Severity**: {issue.severity}
+    **Lines**: {line_range}
+    **Suggestion**: {issue.suggestion}
+    
+    ```suggestion
+    {issue.code}
+    ```
     """
     return issue_output
 
@@ -339,28 +362,16 @@ def main():
 
         # 处理AI反馈
         for issue in issues:
+                # 格式化评论内容（已包含suggestion格式）
                 comment = format_for_comment(issue)
-                # 查找原始代码行
-                original_line = None
-                for hunk in file_change['hunks']:
-                    for line_info in hunk['added_lines'] + hunk['context_lines']:
-                        if line_info['line_number'] == issue.line:
-                            original_line = line_info['content']
-                            break
-                    if original_line:
-                        break
                 
-                # 构建正确的diff_hunk和suggestion格式
-                if original_line:
-                    # 标准diff格式：@@ -行号,行数 +行号,行数 @@
-                    diff_hunk = f"@@ -{issue.line},1 +{issue.line},1 @@\n-{original_line}\n+{issue.code}"
-                    comment += f"\n```suggestion\n{issue.code}\n```"
-                else:
-                    # 如果找不到原始行，使用空行作为上下文
-                    diff_hunk = f"@@ -{issue.line},0 +{issue.line},1 @@\n+{issue.code}"
-                    comment += f"\n```suggestion\n{issue.code}\n```"
+                # 处理end_line为None的情况
+                end_line = issue.end_line if issue.end_line is not None else issue.start_line
+                
+                # 发送支持多行范围的评论
                 success = post_comment(
-                    pr_number, repo, commit_id, file_path, issue.line, comment, headers, diff_hunk)
+                    pr_number, repo, commit_id, file_path, 
+                    issue.start_line, end_line, comment, headers)
                 comment_count += 1
                 if success:
                     success_count += 1
