@@ -288,7 +288,7 @@ def format_for_comment(issue: CodeReviewIssue) -> str:
     issue_output = f"""
     Type: {issue.type}
     Severity: {issue.severity}
-    suggestion: {issue.description}
+    suggestion: {issue.suggestion}
     Code:
     ```suggestion
     {issue.code}
