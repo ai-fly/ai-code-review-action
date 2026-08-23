@@ -1,4 +1,4 @@
-name: Giggle Codex Code Review
+name: Codex Code Review
 description: Run Codex against a pull request with organization and project rules
 
 inputs:

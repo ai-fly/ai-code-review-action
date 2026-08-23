@@ -62,9 +62,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Run Giggle Codex Review
+      - name: Run Codex Review
         id: review
-        uses: GiggleAcademy/giggle-common-actions/codereview@main
+        uses: ai-fly/ai-code-review-action/codereview@main
         with:
           openai_api_key: ${{ secrets.openai_api_key }}
           model: ${{ inputs.model }}
@@ -91,7 +91,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const marker = '<!-- giggle-codex-review -->';
+            const marker = '<!-- ai-fly-codex-review -->';
             const body = `${marker}\n${process.env.REVIEW_RESULT}`;
 
             const comments = await github.paginate(
