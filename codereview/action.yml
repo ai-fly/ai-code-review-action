@@ -143,7 +143,7 @@ runs:
           -type f \( \
             -name 'AGENTS.md' -o \
             -name 'AGENTS.override.md' \
-          \) -delete
+          \) -exec rm -f -- {} +
 
     - name: Run Codex
       id: codex
