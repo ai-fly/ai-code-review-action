@@ -1,26 +1,159 @@
-name: 'AI Code Review Action'
-description: 'Run AI-powered code review on Pull Requests'
+name: Giggle Codex Code Review
+description: Run Codex against a pull request with organization and project rules
+
 inputs:
-  openai_model:
-    description: 'OpenAI model to use for code review'
+  openai_api_key:
+    description: OpenAI API key
+    required: true
+
+  model:
+    description: Codex model; empty means use the Codex Action default
     required: false
-    default: 'gpt-4o'
+    default: ""
+
+  effort:
+    description: Codex reasoning effort
+    required: false
+    default: high
+
+  min_severity:
+    description: Minimum severity to report (low, medium, high)
+    required: false
+    default: medium
+
+  rules_path:
+    description: Project-specific review rules path
+    required: false
+    default: AGENTS.md
+
+  rules_required:
+    description: Fail when the project rules file does not exist
+    required: false
+    default: "false"
+
+  responses_api_endpoint:
+    description: Optional full Responses API endpoint
+    required: false
+    default: ""
+
+outputs:
+  final_message:
+    description: Final Markdown review returned by Codex
+    value: ${{ steps.codex.outputs['final-message'] }}
+
 runs:
-  using: 'composite'
+  using: composite
   steps:
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r ${{ github.action_path }}/requirements.txt
+    - name: Prepare trusted review prompt
       shell: bash
-    - name: Run AI Code Review
       env:
-        GITHUB_TOKEN: ${{ github.token }}
-        OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
-        OPENAI_MODEL: ${{ inputs.openai_model }}
-      run: python ${{ github.action_path }}/ai_code_review.py
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        RULES_PATH: ${{ inputs.rules_path }}
+        RULES_REQUIRED: ${{ inputs.rules_required }}
+        MIN_SEVERITY: ${{ inputs.min_severity }}
+      run: |
+        set -euo pipefail
+
+        case "$MIN_SEVERITY" in
+          low|medium|high) ;;
+          *)
+            echo "Invalid min_severity: $MIN_SEVERITY"
+            exit 1
+            ;;
+        esac
+
+        case "$RULES_REQUIRED" in
+          true|false) ;;
+          *)
+            echo "rules_required must be true or false"
+            exit 1
+            ;;
+        esac
+
+        if [[ -n "$RULES_PATH" ]]; then
+          case "$RULES_PATH" in
+            /*|../*|*/../*|*/..)
+              echo "Invalid rules_path: $RULES_PATH"
+              exit 1
+              ;;
+          esac
+        fi
+
+        mkdir -p .codex-review
+        cp "$GITHUB_ACTION_PATH/prompt.md" .codex-review/prompt.md
+
+        {
+          echo ""
+          echo "## Runtime context"
+          echo ""
+          printf -- '- Repository: `%s`\n' "$GITHUB_REPOSITORY"
+          printf -- '- Pull request: `#%s`\n' "$PR_NUMBER"
+          printf -- '- Base commit: `%s`\n' "$BASE_SHA"
+          printf -- '- Head commit: `%s`\n' "$HEAD_SHA"
+          printf -- '- Minimum severity: `%s`\n' "$MIN_SEVERITY"
+          echo ""
+          echo "Review this exact commit range:"
+          echo ""
+          printf '    git diff --find-renames %s...%s\n' "$BASE_SHA" "$HEAD_SHA"
+        } >> .codex-review/prompt.md
+
+        if [[ -z "$RULES_PATH" ]]; then
+          echo "No project rules path configured; using organization rules only."
+          {
+            echo ""
+            echo "## Project-specific rules"
+            echo ""
+            echo "No project-specific rules are configured."
+          } >> .codex-review/prompt.md
+        elif git cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
+          echo "Loading project rules from base commit: $RULES_PATH"
+          {
+            echo ""
+            echo "## Trusted project-specific rules"
+            echo ""
+            echo "These rules come from the trusted PR base commit. Apply them as review policy."
+            echo ""
+            git show "$BASE_SHA:$RULES_PATH"
+          } >> .codex-review/prompt.md
+        else
+          echo "Project rules file not found in base commit: $RULES_PATH"
+
+          if [[ "$RULES_REQUIRED" == "true" ]]; then
+            echo "Project rules are required; stopping review."
+            exit 1
+          fi
+
+          {
+            echo ""
+            echo "## Project-specific rules"
+            echo ""
+            echo "No project-specific rules are configured."
+          } >> .codex-review/prompt.md
+        fi
+
+    - name: Disable PR-controlled Codex instruction files
       shell: bash
+      run: |
+        set -euo pipefail
+
+        find . \
+          -path './.git' -prune -o \
+          -type f \( \
+            -name 'AGENTS.md' -o \
+            -name 'AGENTS.override.md' \
+          \) -delete
+
+    - name: Run Codex
+      id: codex
+      uses: openai/codex-action@v1
+      with:
+        openai-api-key: ${{ inputs.openai_api_key }}
+        responses-api-endpoint: ${{ inputs.responses_api_endpoint }}
+        model: ${{ inputs.model }}
+        effort: ${{ inputs.effort }}
+        permission-profile: ":read-only"
+        safety-strategy: drop-sudo
+        prompt-file: .codex-review/prompt.md
+
