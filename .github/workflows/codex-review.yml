@@ -1,10 +1,16 @@
-name: Reusable Codex Code Review
+name: Reusable AI Code Review
 
 on:
   workflow_call:
     inputs:
+      engine:
+        description: Review engine (codex or open-code-review)
+        required: false
+        type: string
+        default: codex
+
       model:
-        description: Codex model; empty means use the default
+        description: Model ID
         required: false
         type: string
         default: ""
@@ -16,13 +22,13 @@ on:
         default: high
 
       min_severity:
-        description: Minimum severity to report
+        description: Minimum severity reported by Codex
         required: false
         type: string
         default: medium
 
       rules_path:
-        description: Project-specific review rules path
+        description: Project-specific Markdown review rules
         required: false
         type: string
         default: AGENTS.md
@@ -34,18 +40,78 @@ on:
         default: false
 
       responses_api_endpoint:
-        description: Optional full Responses API endpoint
+        description: Full Responses API endpoint used by Codex
         required: false
         type: string
-        default: ""
+        default: "https://openrouter.ai/api/v1/responses"
+
+      ocr_llm_url:
+        description: OpenAI-compatible Chat Completions endpoint used by OpenCodeReview
+        required: false
+        type: string
+        default: "https://openrouter.ai/api/v1/chat/completions"
+
+      ocr_language:
+        description: OpenCodeReview output language
+        required: false
+        type: string
+        default: Chinese
+
+      ocr_version:
+        description: Version of @alibaba-group/open-code-review
+        required: false
+        type: string
+        default: latest
+
+      ocr_concurrency:
+        description: Maximum number of concurrent OpenCodeReview tasks
+        required: false
+        type: string
+        default: "4"
 
     secrets:
       openai_api_key:
-        description: OpenAI API key
+        description: OpenAI-compatible API key, including OpenRouter
         required: true
 
 jobs:
-  review:
+  validate_engine:
+    name: Validate review configuration
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: none
+
+    steps:
+      - name: Validate engine
+        shell: bash
+        env:
+          REVIEW_ENGINE: ${{ inputs.engine }}
+          REVIEW_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+
+          case "$REVIEW_ENGINE" in
+            codex)
+              ;;
+            open-code-review)
+              if [[ -z "$REVIEW_MODEL" ]]; then
+                echo "model is required when engine=open-code-review"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unsupported review engine: $REVIEW_ENGINE"
+              echo "Supported engines: codex, open-code-review"
+              exit 1
+              ;;
+          esac
+
+  codex_review:
+    name: Codex review
+    needs: validate_engine
+    if: ${{ inputs.engine == 'codex' }}
+
     runs-on: ubuntu-latest
 
     permissions:
@@ -74,12 +140,22 @@ jobs:
           rules_required: ${{ inputs.rules_required }}
           responses_api_endpoint: ${{ inputs.responses_api_endpoint }}
 
-  comment:
-    needs: review
-    if: ${{ needs.review.outputs.final_message != '' }}
+  codex_comment:
+    name: Publish Codex review
+    needs: codex_review
+
+    if: >-
+      ${{
+        always() &&
+        inputs.engine == 'codex' &&
+        needs.codex_review.result == 'success' &&
+        needs.codex_review.outputs.final_message != ''
+      }}
+
     runs-on: ubuntu-latest
 
     permissions:
+      contents: none
       issues: write
       pull-requests: write
 
@@ -87,7 +163,7 @@ jobs:
       - name: Create or update PR review comment
         uses: actions/github-script@v7
         env:
-          REVIEW_RESULT: ${{ needs.review.outputs.final_message }}
+          REVIEW_RESULT: ${{ needs.codex_review.outputs.final_message }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -116,12 +192,166 @@ jobs:
                 comment_id: previous.id,
                 body
               });
+
+              core.info(`Updated Codex review comment: ${previous.html_url}`);
             } else {
-              await github.rest.issues.createComment({
+              const created = await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
                 body
               });
+
+              core.info(
+                `Created Codex review comment: ${created.data.html_url}`
+              );
             }
 
+  open_code_review:
+    name: OpenCodeReview
+    needs: validate_engine
+    if: ${{ inputs.engine == 'open-code-review' }}
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR merge commit
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      # 始终从 PR 的 base commit 读取规则，避免 PR 修改规则后影响本次审核。
+      #
+      # OpenCodeReview 使用 JSON 规则，因此这里把 AGENTS.md 转换成：
+      #
+      # {
+      #   "rules": [{
+      #     "path": "**/*",
+      #     "rule": "...AGENTS.md 内容...",
+      #     "merge_system_rule": true
+      #   }]
+      # }
+      - name: Prepare trusted OpenCodeReview rules
+        id: prepare_ocr_rules
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          RULES_PATH: ${{ inputs.rules_path }}
+          RULES_REQUIRED: ${{ inputs.rules_required }}
+        run: |
+          set -euo pipefail
+
+          case "$RULES_REQUIRED" in
+            true|false)
+              ;;
+            *)
+              echo "rules_required must be true or false"
+              exit 1
+              ;;
+          esac
+
+          if [[ -n "$RULES_PATH" ]]; then
+            case "$RULES_PATH" in
+              /*|../*|*/../*|*/..)
+                echo "Invalid rules_path: $RULES_PATH"
+                exit 1
+                ;;
+            esac
+          fi
+
+          mkdir -p .ocr-review
+
+          if [[ -z "$RULES_PATH" ]]; then
+            echo "No project-specific rules path configured."
+
+            cat > .ocr-review/project-rules.md <<'EOF'
+          Apply the built-in OpenCodeReview rules.
+          Report only actionable findings that are caused by this pull request.
+          EOF
+          elif git cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
+            echo "Loading project rules from base commit: $RULES_PATH"
+
+            git show "$BASE_SHA:$RULES_PATH" \
+              > .ocr-review/project-rules.md
+          else
+            echo "Project rules file not found in base commit: $RULES_PATH"
+
+            if [[ "$RULES_REQUIRED" == "true" ]]; then
+              echo "Project rules are required; stopping review."
+              exit 1
+            fi
+
+            cat > .ocr-review/project-rules.md <<'EOF'
+          Apply the built-in OpenCodeReview rules.
+          Report only actionable findings that are caused by this pull request.
+          EOF
+          fi
+
+          jq -n \
+            --rawfile project_rule .ocr-review/project-rules.md \
+            '{
+              rules: [
+                {
+                  path: "**/*",
+                  rule: $project_rule,
+                  merge_system_rule: true
+                }
+              ]
+            }' > .ocr-review/rule.json
+
+          jq -e '.rules | type == "array"' \
+            .ocr-review/rule.json >/dev/null
+
+          echo "rule_path=.ocr-review/rule.json" >> "$GITHUB_OUTPUT"
+
+      - name: Run OpenCodeReview
+        id: ocr
+        uses: alibaba/open-code-review@main
+        with:
+          llm_url: ${{ inputs.ocr_llm_url }}
+          llm_auth_token: ${{ secrets.openai_api_key }}
+          llm_model: ${{ inputs.model }}
+          llm_use_anthropic: "false"
+
+          language: ${{ inputs.ocr_language }}
+          ocr_version: ${{ inputs.ocr_version }}
+          review_concurrency: ${{ inputs.ocr_concurrency }}
+
+          rule: ${{ steps.prepare_ocr_rules.outputs.rule_path }}
+          github_token: ${{ github.token }}
+
+          sticky_summary: "true"
+          incremental: "true"
+          incremental_overlap_threshold: "0.6"
+          review_comment_batch_size: "50"
+
+          upload_artifacts: "true"
+
+      - name: Print OpenCodeReview result
+        if: ${{ always() }}
+        shell: bash
+        env:
+          COMMENTS_TOTAL: ${{ steps.ocr.outputs.comments_total }}
+          COMMENTS_INLINE: ${{ steps.ocr.outputs.comments_inline }}
+          COMMENTS_SKIPPED: ${{ steps.ocr.outputs.comments_skipped }}
+          COMMENTS_ROUTED: ${{ steps.ocr.outputs.comments_routed }}
+          COMMENTS_FAILED: ${{ steps.ocr.outputs.comments_failed }}
+          SUMMARY_URL: ${{ steps.ocr.outputs.summary_comment_url }}
+        run: |
+          {
+            echo "## OpenCodeReview result"
+            echo
+            echo "- Total findings: ${COMMENTS_TOTAL:-0}"
+            echo "- Inline comments: ${COMMENTS_INLINE:-0}"
+            echo "- Skipped comments: ${COMMENTS_SKIPPED:-0}"
+            echo "- Routed to summary: ${COMMENTS_ROUTED:-0}"
+            echo "- Failed comments: ${COMMENTS_FAILED:-0}"
+            echo "- Summary: ${SUMMARY_URL:-not-created}"
+          } >> "$GITHUB_STEP_SUMMARY"
