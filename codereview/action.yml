@@ -1,4 +1,4 @@
-name: Codex Code Review
+name: Giggle Codex Code Review
 description: Run Codex against a pull request with organization and project rules
 
 inputs:
@@ -39,7 +39,7 @@ inputs:
 outputs:
   final_message:
     description: Final Markdown review returned by Codex
-    value: ${{ steps.codex.outputs['final-message'] }}
+    value: ${{ steps.review.outputs.final_message }}
 
 runs:
   using: composite
@@ -143,11 +143,11 @@ runs:
           -type f \( \
             -name 'AGENTS.md' -o \
             -name 'AGENTS.override.md' \
-          \) -exec rm -f -- {} +
+          \) -exec sh -c 'for file do : > "$file"; done' sh {} +
 
     - name: Run Codex
       id: codex
-      uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56
+      uses: openai/codex-action@52fe01ec70a42f454c9d2ebd47598f9fd6893d56 # v1.11
       with:
         openai-api-key: ${{ inputs.openai_api_key }}
         responses-api-endpoint: ${{ inputs.responses_api_endpoint }}
@@ -156,4 +156,34 @@ runs:
         permission-profile: ":read-only"
         safety-strategy: drop-sudo
         prompt-file: .codex-review/prompt.md
+        output-file: .codex-review/codex-output.md
 
+    - name: Normalize Codex review output
+      id: review
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        raw_file=".codex-review/codex-output.md"
+        final_file=".codex-review/final-output.md"
+
+        if [[ ! -s "$raw_file" ]]; then
+          : > "$raw_file"
+        fi
+
+        awk '
+          /<!-- CODEX_REVIEW_START -->/ {flag=1; found=1; next}
+          /<!-- CODEX_REVIEW_END -->/ {flag=0}
+          flag {print}
+          END {if (!found) exit 2}
+        ' "$raw_file" > "$final_file" || cp "$raw_file" "$final_file"
+
+        if [[ ! -s "$final_file" ]]; then
+          cp "$raw_file" "$final_file"
+        fi
+
+        {
+          echo "final_message<<EOF"
+          cat "$final_file"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
