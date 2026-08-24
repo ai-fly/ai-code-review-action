@@ -79,27 +79,39 @@ jobs:
     name: Validate review configuration
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: none
+    permissions: {}
 
     steps:
-      - name: Validate engine
+      - name: Validate engine and inputs
         shell: bash
         env:
           REVIEW_ENGINE: ${{ inputs.engine }}
           REVIEW_MODEL: ${{ inputs.model }}
+          CODEX_ENDPOINT: ${{ inputs.responses_api_endpoint }}
+          OCR_ENDPOINT: ${{ inputs.ocr_llm_url }}
         run: |
           set -euo pipefail
 
           case "$REVIEW_ENGINE" in
             codex)
+              if [[ -z "$CODEX_ENDPOINT" ]]; then
+                echo "responses_api_endpoint is required when engine=codex"
+                exit 1
+              fi
               ;;
+
             open-code-review)
               if [[ -z "$REVIEW_MODEL" ]]; then
                 echo "model is required when engine=open-code-review"
                 exit 1
               fi
+
+              if [[ -z "$OCR_ENDPOINT" ]]; then
+                echo "ocr_llm_url is required when engine=open-code-review"
+                exit 1
+              fi
               ;;
+
             *)
               echo "Unsupported review engine: $REVIEW_ENGINE"
               echo "Supported engines: codex, open-code-review"
@@ -155,7 +167,6 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: none
       issues: write
       pull-requests: write
 
@@ -193,7 +204,9 @@ jobs:
                 body
               });
 
-              core.info(`Updated Codex review comment: ${previous.html_url}`);
+              core.info(
+                `Updated Codex review comment: ${previous.html_url}`
+              );
             } else {
               const created = await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -227,17 +240,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # 始终从 PR 的 base commit 读取规则，避免 PR 修改规则后影响本次审核。
+      # 从 PR 的 base commit 读取规则，防止 PR 自己修改审核规则。
       #
-      # OpenCodeReview 使用 JSON 规则，因此这里把 AGENTS.md 转换成：
-      #
-      # {
-      #   "rules": [{
-      #     "path": "**/*",
-      #     "rule": "...AGENTS.md 内容...",
-      #     "merge_system_rule": true
-      #   }]
-      # }
+      # 规则文件必须写入 RUNNER_TEMP。
+      # OpenCodeReview Action 内部会重新 checkout 并清理 GITHUB_WORKSPACE，
+      # 如果放在项目目录中，rule.json 会被删除。
       - name: Prepare trusted OpenCodeReview rules
         id: prepare_ocr_rules
         shell: bash
@@ -266,20 +273,26 @@ jobs:
             esac
           fi
 
-          mkdir -p .ocr-review
+          OCR_RULE_DIR="$RUNNER_TEMP/ocr-review"
+          OCR_RULE_MARKDOWN="$OCR_RULE_DIR/project-rules.md"
+          OCR_RULE_JSON="$OCR_RULE_DIR/rule.json"
+
+          mkdir -p "$OCR_RULE_DIR"
 
           if [[ -z "$RULES_PATH" ]]; then
             echo "No project-specific rules path configured."
 
-            cat > .ocr-review/project-rules.md <<'EOF'
-          Apply the built-in OpenCodeReview rules.
-          Report only actionable findings that are caused by this pull request.
-          EOF
+            printf '%s\n' \
+              'Apply the built-in OpenCodeReview rules.' \
+              'Report only actionable findings caused by this pull request.' \
+              > "$OCR_RULE_MARKDOWN"
+
           elif git cat-file -e "$BASE_SHA:$RULES_PATH" 2>/dev/null; then
             echo "Loading project rules from base commit: $RULES_PATH"
 
             git show "$BASE_SHA:$RULES_PATH" \
-              > .ocr-review/project-rules.md
+              > "$OCR_RULE_MARKDOWN"
+
           else
             echo "Project rules file not found in base commit: $RULES_PATH"
 
@@ -288,14 +301,14 @@ jobs:
               exit 1
             fi
 
-            cat > .ocr-review/project-rules.md <<'EOF'
-          Apply the built-in OpenCodeReview rules.
-          Report only actionable findings that are caused by this pull request.
-          EOF
+            printf '%s\n' \
+              'Apply the built-in OpenCodeReview rules.' \
+              'Report only actionable findings caused by this pull request.' \
+              > "$OCR_RULE_MARKDOWN"
           fi
 
           jq -n \
-            --rawfile project_rule .ocr-review/project-rules.md \
+            --rawfile project_rule "$OCR_RULE_MARKDOWN" \
             '{
               rules: [
                 {
@@ -304,12 +317,15 @@ jobs:
                   merge_system_rule: true
                 }
               ]
-            }' > .ocr-review/rule.json
+            }' > "$OCR_RULE_JSON"
 
           jq -e '.rules | type == "array"' \
-            .ocr-review/rule.json >/dev/null
+            "$OCR_RULE_JSON" >/dev/null
 
-          echo "rule_path=.ocr-review/rule.json" >> "$GITHUB_OUTPUT"
+          test -s "$OCR_RULE_JSON"
+
+          echo "OpenCodeReview rules generated at: $OCR_RULE_JSON"
+          echo "rule_path=$OCR_RULE_JSON" >> "$GITHUB_OUTPUT"
 
       - name: Run OpenCodeReview
         id: ocr
